@@ -273,37 +273,57 @@ async function _getKimiHeadersInternal(forceNew = false): Promise<{ headers: Rec
       console.log('[Playwright] Typed char, waiting for UI to update...');
       await sleep(2000); // Wait more for Send button to enable
       
-      // Improved Send Button detection & aggressive clicking
       const selectors = [
         'button[type="submit"]',
         'button.send-button',
         '.chat-input-send-button',
+        'button:has(svg)',
+        '[role="button"]:has(svg)',
         'svg.send-icon',
-        'button:has(svg)'
       ];
-      
+
       let clicked = false;
       for (const selector of selectors) {
         try {
-          const btn = await activePage!.$(selector);
-          if (btn && await btn.isVisible()) {
-            console.log(`[Playwright] Attempting click on: ${selector}`);
-            
-            // Try both DOM click and Playwright click
-            await activePage!.evaluate((sel) => {
-              const element = document.querySelector(sel) as HTMLElement;
-              if (element) {
-                element.focus();
-                element.click();
+          const el = await activePage!.$(selector);
+          if (!el || !(await el.isVisible())) continue;
+
+          console.log(`[Playwright] Attempting click on: ${selector}`);
+
+          await activePage!.evaluate((sel) => {
+            const node = document.querySelector(sel);
+            if (!node) return;
+            const target =
+              (node.closest('button') as HTMLElement | null) ||
+              (node.closest('[role="button"]') as HTMLElement | null) ||
+              (node as HTMLElement);
+            if (typeof (target as any).focus === 'function') {
+              try {
+                target.focus();
+              } catch {
               }
-            }, selector);
-            
-            // Also try a real mouse click just in case
-            await btn.click({ force: true, delay: 50 }).catch(() => {});
-            
-            clicked = true;
-            break;
-          }
+            }
+            if (typeof (target as any).click === 'function') {
+              target.click();
+              return;
+            }
+            target.dispatchEvent(
+              new MouseEvent('click', { bubbles: true, cancelable: true, view: window })
+            );
+          }, selector);
+
+          await el.click({ force: true, delay: 50 }).catch(async () => {
+            const box = await el.boundingBox().catch(() => null);
+            if (box) {
+              await activePage!.mouse.click(
+                box.x + box.width / 2,
+                box.y + box.height / 2
+              );
+            }
+          });
+
+          clicked = true;
+          break;
         } catch (e) {
           console.error(`[Playwright] Error clicking ${selector}:`, e);
         }
@@ -311,8 +331,11 @@ async function _getKimiHeadersInternal(forceNew = false): Promise<{ headers: Rec
 
       if (!clicked) {
         console.log('[Playwright] No send button found/clicked, fallback to Enter...');
+      }
+      try {
         await activePage!.focus(inputSelector);
         await activePage!.keyboard.press('Enter');
+      } catch {
       }
     });
   });
