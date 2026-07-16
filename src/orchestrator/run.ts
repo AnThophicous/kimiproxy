@@ -47,6 +47,7 @@ export interface RunContext {
   signal?: AbortSignal;
   isNewSession?: boolean;
   forcedParentId?: string | null;
+  accountId?: string | null;
 }
 
 export async function prepareKimiRun(ctx: RunContext) {
@@ -55,7 +56,10 @@ export async function prepareKimiRun(ctx: RunContext) {
     ctx.tools,
     ctx.toolChoice
   );
-  const isThinkingModel = ctx.model.includes('thinking');
+  const isThinkingModel =
+    ctx.model.includes('thinking') ||
+    ctx.model.toLowerCase().includes('k3-max') ||
+    ctx.model.toLowerCase() === 'k3';
   const isNewSession =
     ctx.isNewSession ?? isNewChatSession(ctx.messages);
   const forcedParent =
@@ -70,7 +74,9 @@ export async function prepareKimiRun(ctx: RunContext) {
     isThinkingModel,
     ctx.model,
     forcedParent,
-    ctx.signal
+    ctx.signal,
+    3,
+    ctx.accountId
   );
 
   return {
@@ -81,7 +87,10 @@ export async function prepareKimiRun(ctx: RunContext) {
   };
 }
 
-export async function runChatCompletionNonStream(body: OpenAIRequest) {
+export async function runChatCompletionNonStream(
+  body: OpenAIRequest,
+  accountId?: string | null
+) {
   const created = Math.floor(Date.now() / 1000);
   const completionId = makeChatId(uuidv4());
   const prepared = await prepareKimiRun({
@@ -89,6 +98,7 @@ export async function runChatCompletionNonStream(body: OpenAIRequest) {
     messages: body.messages || [],
     tools: body.tools,
     toolChoice: body.tool_choice,
+    accountId: accountId ?? body.user ?? body.metadata?.account ?? null,
   });
 
   const result = await (async () => {
@@ -120,7 +130,8 @@ export async function runChatCompletionNonStream(body: OpenAIRequest) {
 
 export async function runChatCompletionStream(
   body: OpenAIRequest,
-  writer: SseWriter
+  writer: SseWriter,
+  accountId?: string | null
 ): Promise<void> {
   const created = Math.floor(Date.now() / 1000);
   const completionId = makeChatId(uuidv4());
@@ -134,6 +145,7 @@ export async function runChatCompletionStream(
     tools: body.tools,
     toolChoice: body.tool_choice,
     signal: ac.signal,
+    accountId: accountId ?? body.user ?? body.metadata?.account ?? null,
   });
 
   const send = async (delta: any, finishReason: string | null = null, usage?: Usage | null) => {
@@ -198,11 +210,16 @@ export async function runChatCompletionStream(
   await writer.writeDone();
 }
 
-export async function runResponsesNonStream(body: ResponsesRequest) {
+export async function runResponsesNonStream(
+  body: ResponsesRequest,
+  accountId?: string | null
+) {
   const previousId = resolvePreviousId(body);
   let priorMessages: Message[] = [];
   let forcedParentId: string | null | undefined = undefined;
   let sessionId = body.session_id ?? null;
+  const resolvedAccount =
+    accountId ?? body.user ?? body.metadata?.account ?? body.session_id ?? null;
 
   if (previousId) {
     const prev = responseStore.get(previousId);
@@ -264,6 +281,7 @@ export async function runResponsesNonStream(body: ResponsesRequest) {
     toolChoice: body.tool_choice as any,
     isNewSession: !previousId && isNewChatSession(messages),
     forcedParentId: previousId ? forcedParentId : undefined,
+    accountId: resolvedAccount,
   });
 
   const result = await (async () => {
@@ -323,12 +341,15 @@ export async function runResponsesNonStream(body: ResponsesRequest) {
 
 export async function runResponsesStream(
   body: ResponsesRequest,
-  writer: SseWriter
+  writer: SseWriter,
+  accountId?: string | null
 ): Promise<void> {
   const previousId = resolvePreviousId(body);
   let priorMessages: Message[] = [];
   let forcedParentId: string | null | undefined = undefined;
   let sessionId = body.session_id ?? null;
+  const resolvedAccount =
+    accountId ?? body.user ?? body.metadata?.account ?? body.session_id ?? null;
 
   if (previousId) {
     const prev = responseStore.get(previousId);
@@ -393,6 +414,7 @@ export async function runResponsesStream(
     isNewSession: !previousId && isNewChatSession(messages),
     forcedParentId: previousId ? forcedParentId : undefined,
     signal: ac.signal,
+    accountId: resolvedAccount,
   });
 
   const effectiveSessionId = sessionId || prepared.uiSessionId || null;

@@ -7,10 +7,12 @@ import {
 } from '../orchestrator/run.ts';
 import { responseStore } from '../store/response-store.ts';
 import { notFound, statusFromError, toErrorBody } from '../openai/errors.ts';
+import { accountFromRequest } from '../http/account.ts';
 
 export async function createResponse(c: Context) {
   try {
     const body: ResponsesRequest = await c.req.json();
+    const accountId = accountFromRequest(c, body as any);
 
     if (!body.model) {
       return c.json(
@@ -42,11 +44,11 @@ export async function createResponse(c: Context) {
 
     if (body.stream) {
       return createSseResponse(c, async (writer) => {
-        await runResponsesStream(body, writer);
+        await runResponsesStream(body, writer, accountId);
       });
     }
 
-    const response = await runResponsesNonStream(body);
+    const response = await runResponsesNonStream(body, accountId);
     return c.json(response);
   } catch (err: any) {
     console.error('Error in createResponse:', err);

@@ -16,10 +16,11 @@ test('Health check endpoint returns status ok', async () => {
   assert.strictEqual(res.status, 200);
   
   const body = await res.json();
-  assert.deepStrictEqual(body, { status: 'ok' });
+  assert.strictEqual(body.status, 'ok');
+  assert.ok(Array.isArray(body.accounts));
 });
 
-test('Models endpoint returns k2d6 and fallback models', async () => {
+test('Models endpoint returns k2d6 and k3 models', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: any) => {
     const url = typeof input === 'string' ? input : input.url;
@@ -39,6 +40,7 @@ test('Models endpoint returns k2d6 and fallback models', async () => {
     assert.strictEqual(body.object, 'list');
     assert.ok(Array.isArray(body.data));
     assert.ok(body.data.some((m: any) => m.id === 'k2d6'));
+    assert.ok(body.data.some((m: any) => m.id === 'k3-max'));
   } finally {
     globalThis.fetch = originalFetch;
   }

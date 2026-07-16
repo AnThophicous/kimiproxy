@@ -1,6 +1,9 @@
 node_modules/
 dist/
 kimi_profile/
+kimi_profiles/
+!kimi_profiles/.gitkeep
+capture/
 .env
 .env.local
 *.log

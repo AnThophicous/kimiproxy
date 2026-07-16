@@ -1,23 +1,42 @@
-import { getKimiHeaders } from '../services/playwright.ts';
+import {
+  getKimiHeaders,
+  resolveAccountId,
+  clearAccountCache,
+} from '../services/playwright.ts';
 import { encodeConnectRequest } from './connect.ts';
 import { getModelScenario } from './models.ts';
 import { getSessionParent } from './session.ts';
+import {
+  assertNotLimitResponse,
+  errorLooksLikeLimit,
+  KimiLimitError,
+} from '../account/limits.ts';
+import {
+  beginRecycleInBackground,
+  isAutoRecycleEnabled,
+  pickFallbackAccount,
+} from '../account/auto-recycle.ts';
+import { getPreferredAccount, markExhausted } from '../account/pool.ts';
 
 export interface KimiStreamResult {
   stream: ReadableStream;
   headers: Record<string, string>;
   uiSessionId: string;
+  accountId: string;
 }
 
-export async function createKimiStream(
+async function buildAndFetch(
   prompt: string,
   enableThinking: boolean,
   modelId: string,
-  forcedParentId?: string | null,
-  signal?: AbortSignal
+  forcedParentId: string | null | undefined,
+  signal: AbortSignal | undefined,
+  accountId: string | null | undefined
 ): Promise<KimiStreamResult> {
+  const resolvedAccount = getPreferredAccount(accountId);
   const { headers, chatSessionId, parentMessageId } = await getKimiHeaders(
-    forcedParentId === null
+    forcedParentId === null,
+    resolvedAccount
   );
 
   let actualParentId: string | null = parentMessageId;
@@ -33,36 +52,57 @@ export async function createKimiStream(
   }
 
   const modelConfig = getModelScenario(modelId);
+  const thinking = enableThinking || modelConfig.thinking || false;
+
+  const message: any = {
+    parent_id: actualParentId || '',
+    role: 'user',
+    blocks: [
+      {
+        message_id: '',
+        text: {
+          content: prompt,
+        },
+      },
+    ],
+    scenario: modelConfig.scenario,
+  };
+
+  if (modelConfig.isGoal !== undefined) {
+    message.is_goal = modelConfig.isGoal;
+  }
+
+  const options: any = {
+    thinking,
+  };
+
+  if (modelConfig.enablePlugin) {
+    options.enable_plugin = true;
+  }
+  if (modelConfig.contextLength) {
+    options.context_length = modelConfig.contextLength;
+  }
+  if (modelConfig.agentMode) {
+    options.agent_mode = modelConfig.agentMode;
+  }
 
   const payload: any = {
     scenario: modelConfig.scenario,
-    message: {
-      parent_id: actualParentId || '',
-      role: 'user',
-      blocks: [
-        {
-          message_id: '',
-          text: {
-            content: prompt,
-          },
-        },
-      ],
-      scenario: modelConfig.scenario,
-    },
-    options: {
-      thinking: enableThinking || modelConfig.thinking || false,
-    },
+    message,
+    options,
   };
 
   if (activeChatId) {
     payload.chat_id = activeChatId;
   }
 
-  if ((modelConfig as any).kimiPlusId) {
-    payload.kimi_plus_id = (modelConfig as any).kimiPlusId;
+  if (modelConfig.tools?.length) {
+    payload.tools = modelConfig.tools;
   }
-  if ((modelConfig as any).agentMode) {
-    payload.options.agent_mode = (modelConfig as any).agentMode;
+
+  if (modelConfig.kimiplusId) {
+    payload.kimiplus_id = modelConfig.kimiplusId;
+    payload.project_id = '';
   }
 
   const framedPayload = encodeConnectRequest(payload);
@@ -97,6 +137,7 @@ export async function createKimiStream(
 
   if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => '');
+    assertNotLimitResponse(response.status, errText);
     throw new Error(
       `Failed to fetch from Kimi: ${response.status} ${response.statusText} - ${errText}`
     );
@@ -106,7 +147,26 @@ export async function createKimiStream(
     stream: response.body,
     headers,
     uiSessionId: activeChatId,
+    accountId: resolvedAccount,
   };
+}
+
+export async function createKimiStream(
+  prompt: string,
+  enableThinking: boolean,
+  modelId: string,
+  forcedParentId?: string | null,
+  signal?: AbortSignal,
+  accountId?: string | null
+): Promise<KimiStreamResult> {
+  return buildAndFetch(
+    prompt,
+    enableThinking,
+    modelId,
+    forcedParentId,
+    signal,
+    accountId
+  );
 }
 
 export async function createKimiStreamWithRetry(
@@ -115,23 +175,79 @@ export async function createKimiStreamWithRetry(
   modelId: string,
   forcedParentId?: string | null,
   signal?: AbortSignal,
-  retries = 3
+  retries = 4,
+  accountId?: string | null
 ): Promise<KimiStreamResult> {
   let lastError: unknown;
+  let activeAccount = getPreferredAccount(accountId);
+  const tried = new Set<string>();
+  let recyclePromise: Promise<void> | null = null;
+
   for (let i = 0; i < retries; i++) {
     try {
-      return await createKimiStream(
+      const result = await buildAndFetch(
         prompt,
         enableThinking,
         modelId,
         forcedParentId,
-        signal
+        signal,
+        activeAccount
       );
+      return result;
     } catch (err) {
       lastError = err;
       if (signal?.aborted) throw err;
+
+      const failedId = resolveAccountId(activeAccount);
+      tried.add(failedId);
+
+      if (errorLooksLikeLimit(err) && isAutoRecycleEnabled()) {
+        markExhausted(failedId, 120_000);
+        console.log(
+          `[kimi] limite em "${failedId}" → recycle em BACKGROUND + fallback imediato`
+        );
+
+        if (!recyclePromise) {
+          const started = beginRecycleInBackground(failedId);
+          recyclePromise = started.promise.catch((e) => {
+            console.error('[kimi] recycle background erro:', e);
+          });
+        }
+
+        const fallback = pickFallbackAccount(failedId);
+        if (fallback && !tried.has(fallback)) {
+          console.log(`[kimi] hot-swap → account="${fallback}" (enquanto "${failedId}" recicla)`);
+          activeAccount = fallback;
+          continue;
+        }
+
+        const anyOther = pickFallbackAccount(failedId);
+        if (anyOther) {
+          console.log(`[kimi] hot-swap → account="${anyOther}"`);
+          activeAccount = anyOther;
+          continue;
+        }
+
+        if (recyclePromise) {
+          console.log(
+            `[kimi] sem fallback pronto — aguardando recycle de "${failedId}"...`
+          );
+          try {
+            await recyclePromise;
+            await clearAccountCache(failedId);
+            activeAccount = failedId;
+            recyclePromise = null;
+            continue;
+          } catch (recycleErr) {
+            lastError = recycleErr;
+          }
+        }
+      }
+
       if (i < retries - 1) {
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 800));
+        const next = pickFallbackAccount(failedId);
+        if (next) activeAccount = next;
       }
     }
   }

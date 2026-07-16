@@ -6,10 +6,12 @@ import {
   runChatCompletionStream,
 } from '../orchestrator/run.ts';
 import { statusFromError, toErrorBody } from '../openai/errors.ts';
+import { accountFromRequest } from '../http/account.ts';
 
 export async function chatCompletions(c: Context) {
   try {
     const body: OpenAIRequest = await c.req.json();
+    const accountId = accountFromRequest(c, body as any);
 
     if (!body.model) {
       return c.json(
@@ -41,11 +43,11 @@ export async function chatCompletions(c: Context) {
 
     if (body.stream) {
       return createSseResponse(c, async (writer) => {
-        await runChatCompletionStream(body, writer);
+        await runChatCompletionStream(body, writer, accountId);
       });
     }
 
-    const completion = await runChatCompletionNonStream(body);
+    const completion = await runChatCompletionNonStream(body, accountId);
     return c.json(completion);
   } catch (err: any) {
     console.error('Error in chatCompletions:', err);

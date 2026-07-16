@@ -1,45 +1,64 @@
-/*
- * File: login.ts
- * Project: kimiproxy
- * Author: Pedro Farias
- * Created: 2026-05-09
- * 
- * Last Modified: Sat May 09 2026
- * Modified By: Pedro Farias
- */
-
-import { initPlaywright, closePlaywright, activePage, BrowserType } from './services/playwright.ts';
 import * as dotenv from 'dotenv';
+import { BrowserType } from './services/playwright.ts';
+import { runAccountManagerCli } from './account/manager-cli.ts';
+import { getDefaultAccountId, loadAccountStore } from './account/store.ts';
 
 dotenv.config();
 
+function argValue(name: string): string | undefined {
+  const prefix = `--${name}=`;
+  const hit = process.argv.find((a) => a.startsWith(prefix));
+  if (hit) return hit.slice(prefix.length);
+  const idx = process.argv.indexOf(`--${name}`);
+  if (idx >= 0 && process.argv[idx + 1] && !process.argv[idx + 1].startsWith('--')) {
+    return process.argv[idx + 1];
+  }
+  return undefined;
+}
+
+function hasFlag(name: string): boolean {
+  return process.argv.includes(`--${name}`);
+}
+
 async function main() {
-  // Parse browser type from args or env
+  loadAccountStore();
+
   let browserType: BrowserType = 'chromium';
-  const browserArg = process.argv.find(arg => arg.startsWith('--browser='));
-  if (browserArg) {
-    browserType = browserArg.split('=')[1] as BrowserType;
-  } else if (process.env.BROWSER) {
-    browserType = process.env.BROWSER as BrowserType;
+  const browserArg = process.argv.find((arg) => arg.startsWith('--browser='));
+  if (browserArg) browserType = browserArg.split('=')[1] as BrowserType;
+  else if (process.env.BROWSER) browserType = process.env.BROWSER as BrowserType;
+
+  let command: string | undefined;
+  if (hasFlag('login') || hasFlag('L') || hasFlag('l')) command = 'login';
+  if (hasFlag('recycle') || hasFlag('R') || hasFlag('r')) command = 'recycle';
+  if (hasFlag('list') || hasFlag('A') || hasFlag('a')) command = 'list';
+
+  const account = argValue('account') || process.env.KIMI_ACCOUNT;
+
+  if (hasFlag('legacy-open')) {
+    const { initPlaywright, closePlaywright, activePage, sanitizeAccountId, getProfilePath } =
+      await import('./services/playwright.ts');
+    const accountId = sanitizeAccountId(account || getDefaultAccountId());
+    const minutes = Number(argValue('minutes') || '2');
+    console.log(`Legacy open account=${accountId} profile=${getProfilePath(accountId)}`);
+    await initPlaywright(false, browserType, accountId);
+    if (activePage) {
+      await activePage.goto('https://www.kimi.com/', { waitUntil: 'domcontentloaded' });
+    }
+    console.log(`Aberto por ${minutes} min — logue Google+Kimi se precisar`);
+    await new Promise((r) => setTimeout(r, Math.max(30, minutes * 60) * 1000));
+    await closePlaywright();
+    return;
   }
 
-  console.log(`Opening ${browserType} to allow manual login on Kimi...`);
-  await initPlaywright(false, browserType); // false = not headless
-  if (activePage) {
-    await activePage.goto('https://www.kimi.com/', { waitUntil: 'domcontentloaded' });
-  } else {
-    console.error('Failed to get active page');
-    process.exit(1);
-  }
-  console.log('Browser opened. Please login to www.kimi.com.');
-  console.log('Once you are fully logged in and can see the chat interface, close the browser window or press Ctrl+C here.');
-  
-  // Wait indefinitely until user closes the process
-  process.on('SIGINT', async () => {
-    console.log('Closing browser...');
-    await closePlaywright();
-    process.exit(0);
+  await runAccountManagerCli({
+    browserType,
+    command,
+    account,
   });
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
