@@ -1,7 +1,7 @@
 {
   "name": "kimiproxy",
-  "version": "1.0.0",
-  "description": "",
+  "version": "2.0.0",
+  "description": "OpenAI-compatible Kimi proxy with chat completions and Responses API",
   "main": "index.js",
   "scripts": {
     "start": "npx tsx src/index.ts",
@@ -12,7 +12,7 @@
     "login:firefox": "npx tsx src/login.ts --browser=firefox",
     "login:chrome": "npx tsx src/login.ts --browser=chrome",
     "login:edge": "npx tsx src/login.ts --browser=edge",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "npx tsx --test src/tests/*.test.ts"
   },
   "keywords": [],
   "author": "Pedro Farias",

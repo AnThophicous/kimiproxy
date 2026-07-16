@@ -11,7 +11,8 @@ Proxy API local compatível com OpenAI que roteia requisições para os modelos 
 
 ## ✨ Features
 
-- **OpenAI API Compatible**: Interface compatível com `/v1/chat/completions` e `/v1/models`.
+- **OpenAI API Compatible**: `/v1/chat/completions`, `/v1/models` e **`/v1/responses`** (com `previous_response_id` / `last_response_id`, store, GET/DELETE).
+- **SSE profissional**: headers anti-buffer, keepalive, tool_calls incrementais, usage + `[DONE]`.
 - **Reasoning Support**: Suporte completo ao modo de pensamento (thinking) dos modelos Kimi.
 - **Tool Execution**: Sistema de execução de ferramentas locais integrado ao fluxo do chat.
 - **Session Persistence**: Login persistente com armazenamento de perfil do navegador em `kimi_profile/`.
@@ -117,6 +118,9 @@ Ao iniciar, o console exibirá:
 Available Routes:
 - [GET] /health
 - [POST] /v1/chat/completions
+- [POST] /v1/responses
+- [GET] /v1/responses/:id
+- [DELETE] /v1/responses/:id
 - [GET] /v1/models
 ```
 
@@ -143,9 +147,45 @@ Content-Type: application/json
 Authorization: Bearer sua-chave
 ```
 
+### Responses API
+
+```http
+POST /v1/responses
+Content-Type: application/json
+Authorization: Bearer sua-chave
+```
+
+```json
+{
+  "model": "k2d6-thinking",
+  "input": "Olá",
+  "store": true,
+  "stream": false
+}
+```
+
+Multi-turn com chain (aceita `previous_response_id` **ou** alias `last_response_id`):
+
+```json
+{
+  "model": "k2d6",
+  "input": "continue a ideia",
+  "previous_response_id": "resp_...",
+  "session_id": "minha-sessao"
+}
+```
+
+| Método | Rota | Função |
+|--------|------|--------|
+| POST | `/v1/responses` | Criar (stream SSE semântico ou JSON) |
+| GET | `/v1/responses/:id` | Recuperar resposta armazenada |
+| DELETE | `/v1/responses/:id` | Remover do store |
+| POST | `/v1/responses/:id/cancel` | Cancel (background only → 400) |
+
 **Modelos Suportados**:
 - `k2d6-thinking`: Modelo com raciocínio (thinking) habilitado.
 - `k2d6`: Modelo padrão sem o bloco de pensamento.
+- `k2d6-agent` / `k2d6-agent-ultra`: cenários agent.
 
 ---
 
@@ -176,19 +216,21 @@ console.log(completion.choices[0].message.content);
 ```
 kimiproxy/
 ├── src/
-│   ├── index.ts              # Entry point e servidor Hono
-│   ├── routes/
-│   │   └── chat.ts          # Handler compatível com OpenAI
-│   ├── services/
-│   │   ├── kimi.ts          # Integração com a API do Kimi
-│   │   └── playwright.ts    # Automação de navegador
-│   ├── tools/
-│   │   ├── executor.ts      # Execução de ferramentas
-│   │   └── registry.ts      # Registro de tools
-│   └── login.ts             # Script de autenticação
-├── kimi_profile/            # Armazenamento da sessão (gitignored)
-├── Dockerfile                # Configuração Docker
-└── package.json             # Scripts e dependências
+│   ├── index.ts                 # Boot do servidor
+│   ├── app.ts                   # Factory Hono (rotas)
+│   ├── domain/types.ts          # Tipos OpenAI unificados
+│   ├── openai/                  # SSE, chat chunks, responses events, errors
+│   ├── kimi/                    # Connect protocol, client, prompt, session
+│   ├── stream/                  # Pipeline unificado + auto-continue
+│   ├── store/                   # Response store (previous_response_id)
+│   ├── orchestrator/            # Orquestração chat + responses
+│   ├── routes/                  # chat, responses, models, health
+│   ├── services/playwright.ts   # Sessão browser
+│   ├── tools/                   # Parser/registry de tools
+│   └── login.ts
+├── kimi_profile/
+├── Dockerfile
+└── package.json
 ```
 
 ---
